@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import List, Set
+from typing import Dict, List, Optional, Set
 
 import httpx
 import networkx as nx
@@ -14,14 +14,12 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from sklearn.ensemble import IsolationForest
 
-app = FastAPI(title="LiquiTrade Hybrid AI Fraud Gatekeeper (ML + Qwen3 8B)", version="2.0.0")
+app = FastAPI(title="LiquiTrade Deterministic Velocity & Qwen3 8B Risk Gate", version="3.0.0")
 
 KEY_DIR = Path("keys")
 PRIV_KEY_PATH = KEY_DIR / "ai_private.pem"
 PUB_KEY_PATH = KEY_DIR / "ai_public.pem"
-FRAUD_THRESHOLD = 35.0
 
-# Connects automatically to Windows Ollama via OLLAMA_URL set in ~/.bashrc
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3:8b")
 
@@ -52,11 +50,18 @@ def load_or_generate_keys():
 
 PRIVATE_KEY, PUBLIC_KEY_PEM = load_or_generate_keys()
 
-# Pre-trained Isolation Forest on normal MSME invoice distributions
+# Synthetic 6-month historical monthly average baselines (INR) per MSME GSTIN
+MSME_6M_AVG_BASELINE: Dict[str, float] = {
+    "33AABCU9603R1ZM": 4500000.0,  # ₹45 Lakh avg -> ₹50L invoice is +11.1% (TIER_A)
+    "29AAACR5055K1Z7": 1200000.0,  # ₹12 Lakh avg
+    "27AAACA8567B1Z2": 400000.0,   # ₹4 Lakh avg -> ₹9.5L invoice is +137.5% (QUARANTINED)
+}
+
+# Supplementary Isolation Forest anomaly detector
 rng = np.random.default_rng(42)
 normal_invoices = np.column_stack([
-    rng.lognormal(mean=11.5, sigma=0.7, size=500),
-    rng.integers(15, 61, size=500),
+    rng.lognormal(mean=14.5, sigma=0.7, size=500),
+    rng.integers(30, 121, size=500),
     rng.choice([5.0, 12.0, 18.0], size=500),
     np.zeros(500),
 ])
@@ -67,25 +72,39 @@ SEEN_HASHES: Set[str] = set()
 TRADE_GRAPH = nx.DiGraph()
 
 
+class RawInvoiceTextRequest(BaseModel):
+    rawText: str = Field(
+        ...,
+        example="GST Tax Invoice INV-2026-501 | Seller GSTIN: 33AABCU9603R1ZM | Buyer GSTIN: 29AAACR5055K1Z7 | IRN: IRN50L9981 | Total: INR 5000000.00 | Due: 2026-12-30 | Items: Precision CNC automotive shafts (HSN 8708)",
+    )
+
+
 class InvoiceRequest(BaseModel):
-    invoiceId: str = Field(..., example="INV-2026-001")
+    invoiceId: str = Field(..., example="INV-2026-501")
     msmeId: str = Field(..., example="MSME-TN-01")
+    buyerId: str = Field(default="BUYER-CORP-01", example="BUYER-CORP-01")
     sellerGstin: str = Field(..., example="33AABCU9603R1ZM")
     buyerGstin: str = Field(..., example="29AAACR5055K1Z7")
-    amountInr: float = Field(..., gt=0, example=145250.0)
+    amountInr: float = Field(..., gt=0, example=5000000.0)
+    sixMonthAvgInr: Optional[float] = Field(
+        default=None,
+        description="Optional override for MSME 6-month rolling average invoice size (INR)",
+    )
     gstRatePct: float = Field(default=18.0, example=18.0)
-    paymentTermDays: int = Field(default=30, example=30)
-    dueDate: str = Field(..., example="2026-12-20")
-    irn: str = Field(..., description="GST e-Invoice IRN hash", example="IRN998877")
+    tenorDays: int = Field(default=90, example=90)
+    annualDiscountPct: float = Field(default=12.0, example=12.0)
+    dueDate: str = Field(..., example="2026-12-30")
+    irn: str = Field(..., example="IRN50L9981")
     lineItemDescription: str = Field(
-        default="CNC machined aluminum automotive brackets - 500 units (HSN 8708)",
-        description="Goods/services description audited semantically by Qwen3 8B",
+        default="Precision CNC automotive shafts - 2,000 units (HSN 8708)",
     )
 
 
 class AttestationPayload(BaseModel):
     invoiceId: str
     invoiceHash: str
+    riskTier: str
+    velocityDeltaPct: float
     fraudScore: float
     approved: bool
     signature: str
@@ -93,9 +112,11 @@ class AttestationPayload(BaseModel):
 
 class EvaluationResponse(BaseModel):
     attestation: AttestationPayload
-    qwenAuditSummary: str
+    sixMonthAvgInr: float
+    qwenExplanation: str
     reasons: List[str]
-    chaincodeArgs: List[str]
+    registerChaincodeArgs: List[str]
+    issueTokenChaincodeArgs: List[str]
 
 
 def compute_invoice_hash(req: InvoiceRequest) -> str:
@@ -103,47 +124,58 @@ def compute_invoice_hash(req: InvoiceRequest) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def sign_attestation(invoice_id: str, invoice_hash: str, fraud_score: float, approved: bool) -> str:
+def sign_attestation(
+    invoice_id: str,
+    invoice_hash: str,
+    risk_tier: str,
+    velocity_delta_pct: float,
+    fraud_score: float,
+    approved: bool,
+) -> str:
+    # Matches Go chaincode: fmt.Sprintf("%s|%s|%s|%.2f|%.2f|%t", ...)
     approved_str = "true" if approved else "false"
-    canonical_msg = f"{invoice_id}|{invoice_hash}|{fraud_score:.2f}|{approved_str}".encode("utf-8")
+    canonical_msg = (
+        f"{invoice_id}|{invoice_hash}|{risk_tier}|{velocity_delta_pct:.2f}|{fraud_score:.2f}|{approved_str}"
+    ).encode("utf-8")
     der_sig = PRIVATE_KEY.sign(canonical_msg, ec.ECDSA(hashes.SHA256()))
     return base64.b64encode(der_sig).decode("utf-8")
 
 
-def audit_with_qwen(req: InvoiceRequest) -> tuple[float, str]:
-    """Calls local Qwen3 8B via Windows Ollama to audit semantic invoice legitimacy."""
-    prompt = f"""You are an Indian MSME trade-finance fraud auditor. Analyze this GST B2B invoice for fraud red flags (vague shell-company descriptions, unrealistic pricing, GST rate mismatch, or fake goods).
-Invoice ID: {req.invoiceId}
-Amount (INR): {req.amountInr}
-GST Rate (%): {req.gstRatePct}
-Payment Terms (Days): {req.paymentTermDays}
-Description: "{req.lineItemDescription}"
+def call_qwen_json(prompt: str) -> dict:
+    resp = httpx.post(
+        OLLAMA_URL,
+        json={
+            "model": QWEN_MODEL,
+            "prompt": prompt,
+            "format": "json",
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.1},
+        },
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return json.loads(resp.json().get("response", "{}"))
 
-Respond ONLY in valid JSON with two keys:
-- "semantic_risk": integer from 0 (completely legitimate B2B supply) to 40 (high fraud/shell-company risk)
-- "reason": short 1-sentence explanation"""
 
+def explain_with_qwen(req: InvoiceRequest, tier: str, velocity_delta: float, flags: List[str]) -> str:
+    """Slide 6 rule: Deterministic velocity gate decides the tier; local Qwen3 8B explains the result."""
+    prompt = f"""You are an MSME trade-finance risk explainer for NPCI Drunix LiquiTrade.
+A deterministic velocity engine has already classified this invoice:
+- Invoice ID: {req.invoiceId}
+- Amount: INR {req.amountInr:,.2f} (Tenor: {req.tenorDays} days)
+- 6-Month Velocity Delta: {velocity_delta:+.1f}%
+- Deterministic Risk Tier: {tier}
+- Line Items: "{req.lineItemDescription}"
+-Triggered Rules: {flags}
+
+Provide a clear, concise 1-to-2 sentence audit explanation for the MSME and institutional LP dashboards, also noting whether the line-item description matches standard B2B trade.
+Respond ONLY in JSON: {{"explanation": "..."}}"""
     try:
-        resp = httpx.post(
-            OLLAMA_URL,
-            json={
-                "model": QWEN_MODEL,
-                "prompt": prompt,
-                "format": "json",
-                "stream": False,
-                "think": False,
-                "options": {"temperature": 0.1},
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        raw_text = resp.json().get("response", "{}")
-        parsed = json.loads(raw_text)
-        semantic_risk = float(np.clip(parsed.get("semantic_risk", 5.0), 0.0, 40.0))
-        reason = str(parsed.get("reason", "Qwen3 8B semantic audit completed"))
-        return semantic_risk, reason
+        parsed = call_qwen_json(prompt)
+        return str(parsed.get("explanation", f"Classified as {tier} ({velocity_delta:+.1f}% vs 6-month average)."))
     except Exception as exc:
-        return 10.0, f"Qwen3 fallback ({type(exc).__name__}: {exc}) - used ML + graph gates only"
+        return f"Classified as {tier} ({velocity_delta:+.1f}% vs 6-month average). [Qwen3 offline: {type(exc).__name__}]"
 
 
 @app.get("/public-key")
@@ -151,53 +183,83 @@ def get_public_key():
     return {"publicKeyPem": PUBLIC_KEY_PEM}
 
 
+@app.post("/extract-invoice")
+def extract_invoice_fields(payload: RawInvoiceTextRequest):
+    """Slide 3 Step 1 & Slide 6: Local Qwen3 8B extracts structured e-invoice JSON from raw text."""
+    prompt = f"""Extract structured GST e-invoice fields from the following text into valid JSON with keys:
+invoiceId, sellerGstin, buyerGstin, amountInr (number), gstRatePct (number), tenorDays (integer), dueDate (YYYY-MM-DD), irn, lineItemDescription.
+
+Text:
+\"\"\"{payload.rawText}\"\"\""""
+    try:
+        extracted = call_qwen_json(prompt)
+        return {"status": "extracted", "model": QWEN_MODEL, "structuredInvoice": extracted}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_receivable(req: InvoiceRequest):
     reasons: List[str] = []
-    risk_score = 0.0
     inv_hash = compute_invoice_hash(req)
 
-    # 1. Duplicate / Double-Financing Gate
-    if inv_hash in SEEN_HASHES:
-        risk_score += 80.0
-        reasons.append("Duplicate invoice fingerprint detected (double-financing risk)")
+    # 1. Deterministic 6-Month Rolling Velocity Check (Slide 6)
+    baseline_avg = req.sixMonthAvgInr or MSME_6M_AVG_BASELINE.get(req.sellerGstin.upper(), 1000000.0)
+    velocity_delta = round(((req.amountInr - baseline_avg) / baseline_avg) * 100.0, 2)
 
-    # 2. Same-Entity / Self-Invoicing Check
+    if velocity_delta <= 25.0:
+        tier = "TIER_A"
+        risk_score = 12.0
+        reasons.append(f"Velocity +{velocity_delta:.1f}% (<= +25%): TIER_A auto-clear, eligible for 20% institutional LP buy")
+    elif velocity_delta <= 100.0:
+        tier = "TIER_B"
+        risk_score = 32.0
+        reasons.append(f"Velocity +{velocity_delta:.1f}% (+25% to +100%): TIER_B cleared without institutional auto-buy")
+    else:
+        tier = "QUARANTINED"
+        risk_score = 88.0
+        reasons.append(f"Velocity +{velocity_delta:.1f}% (> +100% spike vs 6-month avg): QUARANTINED")
+
+    # 2. Hard Fraud & Graph Gates (Override to QUARANTINED if triggered)
+    if inv_hash in SEEN_HASHES:
+        tier = "QUARANTINED"
+        risk_score = 98.0
+        reasons.append("Duplicate invoice IRN/hash detected (double-financing blocked)")
+
     if req.sellerGstin.strip().upper() == req.buyerGstin.strip().upper():
-        risk_score += 90.0
+        tier = "QUARANTINED"
+        risk_score = 99.0
         reasons.append("Seller and Buyer GSTIN are identical (self-invoicing fraud)")
 
-    # 3. Circular Trading Graph Detection (A -> B -> C -> A)
     TRADE_GRAPH.add_edge(req.sellerGstin, req.buyerGstin, amount=req.amountInr)
     if nx.has_path(TRADE_GRAPH, req.buyerGstin, req.sellerGstin):
-        risk_score += 55.0
+        tier = "QUARANTINED"
+        risk_score = 95.0
         reasons.append("Circular trading cycle detected in GSTIN transaction graph")
 
-    # 4. ML Isolation Forest Statistical Anomaly Score
+    # 3. Supplementary Isolation Forest check
     is_round = 1.0 if (req.amountInr >= 100000 and req.amountInr % 50000 == 0) else 0.0
-    features = np.array([[req.amountInr, req.paymentTermDays, req.gstRatePct, is_round]])
-    raw_anomaly = anomaly_model.decision_function(features)[0]
-    if raw_anomaly < 0:
-        ml_penalty = min(30.0, abs(float(raw_anomaly)) * 100.0)
-        risk_score += ml_penalty
-        reasons.append(f"IsolationForest flagged statistical anomaly (+{ml_penalty:.1f} risk)")
-
-    # 5. Local Qwen3 8B Semantic Invoice Audit
-    qwen_risk, qwen_reason = audit_with_qwen(req)
-    risk_score += qwen_risk
-    reasons.append(f"Qwen3 8B Audit (+{qwen_risk:.1f} risk): {qwen_reason}")
+    features = np.array([[req.amountInr, req.tenorDays, req.gstRatePct, is_round]])
+    if anomaly_model.decision_function(features)[0] < 0 and tier != "QUARANTINED":
+        risk_score = min(65.0, risk_score + 12.0)
+        reasons.append("IsolationForest flagged minor statistical variance")
 
     fraud_score = round(min(100.0, max(0.0, risk_score)), 2)
-    approved = fraud_score <= FRAUD_THRESHOLD
+    approved = tier in ("TIER_A", "TIER_B")
+
+    # 4. Local Qwen3 8B Audit Explanation (explains deterministic result, does not decide)
+    qwen_explanation = explain_with_qwen(req, tier, velocity_delta, reasons)
 
     if approved:
         SEEN_HASHES.add(inv_hash)
 
-    signature = sign_attestation(req.invoiceId, inv_hash, fraud_score, approved)
+    signature = sign_attestation(req.invoiceId, inv_hash, tier, velocity_delta, fraud_score, approved)
 
     attestation = AttestationPayload(
         invoiceId=req.invoiceId,
         invoiceHash=inv_hash,
+        riskTier=tier,
+        velocityDeltaPct=velocity_delta,
         fraudScore=fraud_score,
         approved=approved,
         signature=signature,
@@ -205,15 +267,23 @@ def evaluate_receivable(req: InvoiceRequest):
 
     return EvaluationResponse(
         attestation=attestation,
-        qwenAuditSummary=qwen_reason,
+        sixMonthAvgInr=baseline_avg,
+        qwenExplanation=qwen_explanation,
         reasons=reasons,
-        chaincodeArgs=[
+        registerChaincodeArgs=[
             req.invoiceId,
             inv_hash,
+            req.irn,
             req.msmeId,
+            req.buyerId,
             req.buyerGstin,
             f"{req.amountInr:.2f}",
+            str(req.tenorDays),
             req.dueDate,
+        ],
+        issueTokenChaincodeArgs=[
+            req.invoiceId,
+            f"{req.annualDiscountPct:.2f}",
             attestation.model_dump_json(),
         ],
     )

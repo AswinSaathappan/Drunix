@@ -9,46 +9,61 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
 )
 
-// LiquiTradeContract manages AI-gated MSME receivable tokenization on NPCI Drunix
+// LiquiTradeContract implements AI-gated fractional MSME receivable tokenization on NPCI Drunix
 type LiquiTradeContract struct {
 	contractapi.Contract
 }
 
-// ReceivableToken represents a tokenized MSME invoice on the ledger
-type ReceivableToken struct {
-	InvoiceID       string  `json:"invoiceId"`
-	InvoiceHash     string  `json:"invoiceHash"`
-	MsmeID          string  `json:"msmeId"`
-	BuyerGSTIN      string  `json:"buyerGstin"`
-	AmountINR       float64 `json:"amountInr"`
-	DueDate         string  `json:"dueDate"`
-	FraudScore      float64 `json:"fraudScore"`
-	AIApproved      bool    `json:"aiApproved"`
-	Owner           string  `json:"owner"`
-	Status          string  `json:"status"` // TOKENIZED, FINANCED, SETTLED
-	TokenizedAtTxID string  `json:"tokenizedAtTxId"`
+// InvoiceAsset tracks the full 7-step lifecycle from upload & buyer acceptance to fractional settlement
+type InvoiceAsset struct {
+	InvoiceID            string             `json:"invoiceId"`
+	InvoiceHash          string             `json:"invoiceHash"`
+	IRN                  string             `json:"irn"`
+	MsmeID               string             `json:"msmeId"`
+	BuyerID              string             `json:"buyerId"`
+	BuyerGSTIN           string             `json:"buyerGstin"`
+	AmountINR            float64            `json:"amountInr"`
+	TenorDays            int                `json:"tenorDays"`
+	AnnualDiscountPct    float64            `json:"annualDiscountPct"`
+	DueDate              string             `json:"dueDate"`
+	Status               string             `json:"status"` // REGISTERED, ACCEPTED, MINTED, SETTLED, DEFAULTED
+	RiskTier             string             `json:"riskTier"` // TIER_A, TIER_B, QUARANTINED
+	VelocityDeltaPct     float64            `json:"velocityDeltaPct"`
+	FraudScore           float64            `json:"fraudScore"`
+	TotalTokens          int                `json:"totalTokens"`
+	AvailableTokens      int                `json:"availableTokens"`
+	TokenFaceValueINR    float64            `json:"tokenFaceValueInr"`
+	TokenOfferPriceINR   float64            `json:"tokenOfferPriceInr"`
+	Holdings             map[string]int     `json:"holdings"` // investorId -> token count
+	PayoutsINR           map[string]float64 `json:"payoutsInr,omitempty"`
+	MintedAtTxID         string             `json:"mintedAtTxId,omitempty"`
 }
 
-// AIAttestation is the payload signed by the off-chain AI Fraud Gatekeeper
+// AIAttestation is the cryptographically signed output from the off-chain AI Risk Gate
 type AIAttestation struct {
-	InvoiceID   string  `json:"invoiceId"`
-	InvoiceHash string  `json:"invoiceHash"`
-	FraudScore  float64 `json:"fraudScore"`
-	Approved    bool    `json:"approved"`
-	Signature   string  `json:"signature"` // Base64-encoded ECDSA signature
+	InvoiceID        string  `json:"invoiceId"`
+	InvoiceHash      string  `json:"invoiceHash"`
+	RiskTier         string  `json:"riskTier"`         // TIER_A, TIER_B, QUARANTINED
+	VelocityDeltaPct float64 `json:"velocityDeltaPct"` // % delta vs 6-month MSME average
+	FraudScore       float64 `json:"fraudScore"`
+	Approved         bool    `json:"approved"`
+	Signature        string  `json:"signature"`
 }
 
 const (
-	aiPublicKeyLedgerKey = "CONFIG_AI_GATEKEEPER_PUBKEY"
-	maxFraudThreshold    = 35.0 // Reject invoices with risk score > 35/100
+	aiPublicKeyLedgerKey   = "CONFIG_AI_GATEKEEPER_PUBKEY"
+	institutionLPID        = "INSTITUTION_LP_DEFAULT"
+	tokenFaceValue         = 100.0 // ₹100 minimum retail ticket size
+	tierAInstitutionShare  = 0.20  // 20% instant institutional allocation on Tier A
 )
 
-// InitLedger registers the trusted AI Fraud Gatekeeper ECDSA public key (PEM format)
+// InitLedger registers the trusted AI Risk Gate ECDSA public key (PEM format)
 func (c *LiquiTradeContract) InitLedger(ctx contractapi.TransactionContextInterface, aiPublicKeyPEM string) error {
 	if _, err := parseECDSAPublicKey(aiPublicKeyPEM); err != nil {
 		return fmt.Errorf("invalid AI gatekeeper PEM public key: %v", err)
@@ -56,138 +71,279 @@ func (c *LiquiTradeContract) InitLedger(ctx contractapi.TransactionContextInterf
 	return ctx.GetStub().PutState(aiPublicKeyLedgerKey, []byte(aiPublicKeyPEM))
 }
 
-// TokenizeReceivable mints a receivable token only if the AI Gatekeeper cryptographically approved it
-func (c *LiquiTradeContract) TokenizeReceivable(
+// Step 1: RegisterInvoice records a structured e-invoice and enforces unique IRN/hash keys
+func (c *LiquiTradeContract) RegisterInvoice(
 	ctx contractapi.TransactionContextInterface,
 	invoiceID string,
 	invoiceHash string,
+	irn string,
 	msmeID string,
+	buyerID string,
 	buyerGSTIN string,
 	amountINR float64,
+	tenorDays int,
 	dueDate string,
-	attestationJSON string,
 ) error {
-	if amountINR <= 0 {
-		return fmt.Errorf("invoice amount must be positive")
+	if amountINR < tokenFaceValue {
+		return fmt.Errorf("invoice amount must be at least ₹%.2f", tokenFaceValue)
+	}
+	if tenorDays <= 0 {
+		return fmt.Errorf("tenorDays must be positive")
 	}
 
-	// 1. Prevent double-financing / duplicate tokenization
+	// Prevent duplicate invoice ID
 	existing, err := ctx.GetStub().GetState(invoiceID)
 	if err != nil {
 		return fmt.Errorf("failed reading ledger state: %v", err)
 	}
 	if existing != nil {
-		return fmt.Errorf("receivable %s is already tokenized (duplicate financing blocked)", invoiceID)
+		return fmt.Errorf("invoice %s is already registered", invoiceID)
 	}
 
-	// 2. Parse AI Attestation
+	// Prevent duplicate IRN / invoice hash across different IDs (anti-double-financing)
+	hashKey := "HASH_" + invoiceHash
+	existingHash, err := ctx.GetStub().GetState(hashKey)
+	if err != nil {
+		return fmt.Errorf("failed reading hash registry: %v", err)
+	}
+	if existingHash != nil {
+		return fmt.Errorf("duplicate invoice hash/IRN detected: already registered under %s", string(existingHash))
+	}
+
+	asset := InvoiceAsset{
+		InvoiceID:         invoiceID,
+		InvoiceHash:       invoiceHash,
+		IRN:               irn,
+		MsmeID:            msmeID,
+		BuyerID:           buyerID,
+		BuyerGSTIN:        buyerGSTIN,
+		AmountINR:         amountINR,
+		TenorDays:         tenorDays,
+		AnnualDiscountPct: 12.0,
+		DueDate:           dueDate,
+		Status:            "REGISTERED",
+		Holdings:          make(map[string]int),
+	}
+
+	assetBytes, err := json.Marshal(asset)
+	if err != nil {
+		return err
+	}
+
+	if err := ctx.GetStub().PutState(hashKey, []byte(invoiceID)); err != nil {
+		return err
+	}
+	return ctx.GetStub().PutState(invoiceID, assetBytes)
+}
+
+// Step 2: AcceptInvoice records on-chain confirmation from the anchor buyer
+func (c *LiquiTradeContract) AcceptInvoice(ctx contractapi.TransactionContextInterface, invoiceID string, buyerID string) error {
+	asset, err := c.ReadInvoice(ctx, invoiceID)
+	if err != nil {
+		return err
+	}
+	if asset.Status != "REGISTERED" {
+		return fmt.Errorf("invoice %s cannot be accepted in status %s", invoiceID, asset.Status)
+	}
+	if asset.BuyerID != buyerID {
+		return fmt.Errorf("unauthorized buyer %s: expected %s", buyerID, asset.BuyerID)
+	}
+
+	asset.Status = "ACCEPTED"
+	updatedBytes, err := json.Marshal(asset)
+	if err != nil {
+		return err
+	}
+	return ctx.GetStub().PutState(invoiceID, updatedBytes)
+}
+
+// Step 3 & 4 & 5: IssueInvoiceToken verifies buyer acceptance + AI oracle signature, mints N tokens,
+// and executes the automatic 20% institutional LP allocation for Tier A invoices.
+func (c *LiquiTradeContract) IssueInvoiceToken(
+	ctx contractapi.TransactionContextInterface,
+	invoiceID string,
+	annualDiscountPct float64,
+	attestationJSON string,
+) error {
+	asset, err := c.ReadInvoice(ctx, invoiceID)
+	if err != nil {
+		return err
+	}
+	if asset.Status != "ACCEPTED" {
+		return fmt.Errorf("mint blocked: invoice %s must be ACCEPTED by buyer first (current: %s)", invoiceID, asset.Status)
+	}
+
 	var attestation AIAttestation
 	if err := json.Unmarshal([]byte(attestationJSON), &attestation); err != nil {
 		return fmt.Errorf("invalid AI attestation JSON: %v", err)
 	}
-
-	if attestation.InvoiceID != invoiceID || attestation.InvoiceHash != invoiceHash {
+	if attestation.InvoiceID != invoiceID || attestation.InvoiceHash != asset.InvoiceHash {
 		return fmt.Errorf("attestation mismatch: invoice metadata does not match signed payload")
 	}
 
-	// 3. Enforce AI Gate thresholds
-	if !attestation.Approved || attestation.FraudScore > maxFraudThreshold {
-		return fmt.Errorf("AI gate rejected tokenization: approved=%v, fraudScore=%.2f (max %.2f)",
-			attestation.Approved, attestation.FraudScore, maxFraudThreshold)
-	}
-
-	// 4. Verify ECDSA cryptographic signature from the registered AI Gatekeeper
+	// Verify AI Gatekeeper ECDSA Signature
 	pubKeyBytes, err := ctx.GetStub().GetState(aiPublicKeyLedgerKey)
 	if err != nil || pubKeyBytes == nil {
 		return fmt.Errorf("AI gatekeeper public key not initialized on ledger")
 	}
-
 	pubKey, err := parseECDSAPublicKey(string(pubKeyBytes))
 	if err != nil {
 		return fmt.Errorf("stored AI public key is invalid: %v", err)
 	}
 
-	canonicalMsg := fmt.Sprintf("%s|%s|%.2f|%t", attestation.InvoiceID, attestation.InvoiceHash, attestation.FraudScore, attestation.Approved)
+	canonicalMsg := fmt.Sprintf(
+		"%s|%s|%s|%.2f|%.2f|%t",
+		attestation.InvoiceID,
+		attestation.InvoiceHash,
+		attestation.RiskTier,
+		attestation.VelocityDeltaPct,
+		attestation.FraudScore,
+		attestation.Approved,
+	)
 	if err := verifyECDSASignature(pubKey, canonicalMsg, attestation.Signature); err != nil {
 		return fmt.Errorf("AI signature verification failed: %v", err)
 	}
 
-	// 5. Mint tokenized receivable onto Drunix state database (YugabyteDB / LevelDB)
-	token := ReceivableToken{
-		InvoiceID:       invoiceID,
-		InvoiceHash:     invoiceHash,
-		MsmeID:          msmeID,
-		BuyerGSTIN:      buyerGSTIN,
-		AmountINR:       amountINR,
-		DueDate:         dueDate,
-		FraudScore:      attestation.FraudScore,
-		AIApproved:      true,
-		Owner:           msmeID,
-		Status:          "TOKENIZED",
-		TokenizedAtTxID: ctx.GetStub().GetTxID(),
+	// Enforce AI Risk Gate decision on-chain: Quarantined invoices are never minted
+	if !attestation.Approved || attestation.RiskTier == "QUARANTINED" {
+		return fmt.Errorf("AI gate quarantined invoice %s (tier=%s, velocityDelta=%.2f%%, fraudScore=%.2f): minting blocked",
+			invoiceID, attestation.RiskTier, attestation.VelocityDeltaPct, attestation.FraudScore)
 	}
 
-	tokenBytes, err := json.Marshal(token)
-	if err != nil {
-		return err
+	if annualDiscountPct <= 0 {
+		annualDiscountPct = 12.0
 	}
 
-	return ctx.GetStub().PutState(invoiceID, tokenBytes)
-}
+	totalTokens := int(math.Floor(asset.AmountINR / tokenFaceValue))
+	// Discounted offer price: FaceValue / (1 + r * (days / 365)) -> e.g. 100 / (1 + 0.12*(90/365)) = ₹97.13 or 100*(1 - r*days/365) = ₹97.04
+	offerPrice := math.Round((tokenFaceValue*(1.0-(annualDiscountPct/100.0)*(float64(asset.TenorDays)/365.0)))*100) / 100
 
-// TransferToFinancier transfers ownership of a tokenized receivable to a liquidity provider/bank
-func (c *LiquiTradeContract) TransferToFinancier(ctx contractapi.TransactionContextInterface, invoiceID string, financierID string) error {
-	token, err := c.ReadReceivable(ctx, invoiceID)
-	if err != nil {
-		return err
-	}
-	if token.Status != "TOKENIZED" {
-		return fmt.Errorf("receivable %s cannot be financed in status %s", invoiceID, token.Status)
-	}
+	asset.RiskTier = attestation.RiskTier
+	asset.VelocityDeltaPct = attestation.VelocityDeltaPct
+	asset.FraudScore = attestation.FraudScore
+	asset.AnnualDiscountPct = annualDiscountPct
+	asset.TotalTokens = totalTokens
+	asset.AvailableTokens = totalTokens
+	asset.TokenFaceValueINR = tokenFaceValue
+	asset.TokenOfferPriceINR = offerPrice
+	asset.Status = "MINTED"
+	asset.MintedAtTxID = ctx.GetStub().GetTxID()
 
-	token.Owner = financierID
-	token.Status = "FINANCED"
-
-	updatedBytes, err := json.Marshal(token)
-	if err != nil {
-		return err
-	}
-	return ctx.GetStub().PutState(invoiceID, updatedBytes)
-}
-
-// SettleReceivable marks the receivable paid and closed upon buyer settlement
-func (c *LiquiTradeContract) SettleReceivable(ctx contractapi.TransactionContextInterface, invoiceID string) error {
-	token, err := c.ReadReceivable(ctx, invoiceID)
-	if err != nil {
-		return err
-	}
-	if token.Status == "SETTLED" {
-		return fmt.Errorf("receivable %s is already settled", invoiceID)
+	// Step 5: Automatic 20% institutional LP purchase for Tier A invoices
+	if attestation.RiskTier == "TIER_A" {
+		instTokens := int(math.Floor(float64(totalTokens) * tierAInstitutionShare))
+		if instTokens > 0 {
+			asset.Holdings[institutionLPID] = instTokens
+			asset.AvailableTokens -= instTokens
+		}
 	}
 
-	token.Status = "SETTLED"
-	updatedBytes, err := json.Marshal(token)
+	updatedBytes, err := json.Marshal(asset)
 	if err != nil {
 		return err
 	}
 	return ctx.GetStub().PutState(invoiceID, updatedBytes)
 }
 
-// ReadReceivable fetches a tokenized receivable by ID
-func (c *LiquiTradeContract) ReadReceivable(ctx contractapi.TransactionContextInterface, invoiceID string) (*ReceivableToken, error) {
+// Step 6: FractionalPurchase allows retail/institutional investors to purchase tokens atomically.
+// Drunix MVCC rejects concurrent oversubscription on AvailableTokens.
+func (c *LiquiTradeContract) FractionalPurchase(
+	ctx contractapi.TransactionContextInterface,
+	invoiceID string,
+	investorID string,
+	tokenCount int,
+) error {
+	if tokenCount <= 0 {
+		return fmt.Errorf("tokenCount must be at least 1")
+	}
+
+	asset, err := c.ReadInvoice(ctx, invoiceID)
+	if err != nil {
+		return err
+	}
+	if asset.Status != "MINTED" {
+		return fmt.Errorf("invoice %s is not open for investment (status: %s)", invoiceID, asset.Status)
+	}
+	if tokenCount > asset.AvailableTokens {
+		return fmt.Errorf("insufficient tokens available: requested %d, available %d", tokenCount, asset.AvailableTokens)
+	}
+
+	asset.Holdings[investorID] += tokenCount
+	asset.AvailableTokens -= tokenCount
+
+	updatedBytes, err := json.Marshal(asset)
+	if err != nil {
+		return err
+	}
+	return ctx.GetStub().PutState(invoiceID, updatedBytes)
+}
+
+// Step 7: SettleInvoice computes pro-rata principal + yield payouts to all token holders upon buyer repayment
+func (c *LiquiTradeContract) SettleInvoice(ctx contractapi.TransactionContextInterface, invoiceID string) error {
+	asset, err := c.ReadInvoice(ctx, invoiceID)
+	if err != nil {
+		return err
+	}
+	if asset.Status == "DEFAULTED" {
+		return fmt.Errorf("settlement halted: invoice %s is flagged as DEFAULTED", invoiceID)
+	}
+	if asset.Status != "MINTED" {
+		return fmt.Errorf("invoice %s cannot be settled from status %s", invoiceID, asset.Status)
+	}
+
+	payouts := make(map[string]float64)
+	for investor, tokens := range asset.Holdings {
+		// Each redeemed token pays full ₹100 face value (principal + discounted yield)
+		payouts[investor] = math.Round((float64(tokens)*asset.TokenFaceValueINR)*100) / 100
+	}
+	// Any unsubscribed remainder returns to the MSME
+	if asset.AvailableTokens > 0 {
+		payouts[asset.MsmeID] += math.Round((float64(asset.AvailableTokens)*asset.TokenFaceValueINR)*100) / 100
+	}
+
+	asset.PayoutsINR = payouts
+	asset.Status = "SETTLED"
+
+	updatedBytes, err := json.Marshal(asset)
+	if err != nil {
+		return err
+	}
+	return ctx.GetStub().PutState(invoiceID, updatedBytes)
+}
+
+// FlagDefault halts payouts and records an anchor buyer default on-chain
+func (c *LiquiTradeContract) FlagDefault(ctx contractapi.TransactionContextInterface, invoiceID string, reason string) error {
+	asset, err := c.ReadInvoice(ctx, invoiceID)
+	if err != nil {
+		return err
+	}
+	if asset.Status == "SETTLED" {
+		return fmt.Errorf("invoice %s is already settled", invoiceID)
+	}
+
+	asset.Status = "DEFAULTED"
+	updatedBytes, err := json.Marshal(asset)
+	if err != nil {
+		return err
+	}
+	return ctx.GetStub().PutState(invoiceID, updatedBytes)
+}
+
+// ReadInvoice fetches the current ledger state of an invoice
+func (c *LiquiTradeContract) ReadInvoice(ctx contractapi.TransactionContextInterface, invoiceID string) (*InvoiceAsset, error) {
 	data, err := ctx.GetStub().GetState(invoiceID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read state: %v", err)
+		return nil, fmt.Errorf("failed reading state: %v", err)
 	}
 	if data == nil {
-		return nil, fmt.Errorf("receivable %s does not exist", invoiceID)
+		return nil, fmt.Errorf("invoice %s does not exist", invoiceID)
 	}
 
-	var token ReceivableToken
-	if err := json.Unmarshal(data, &token); err != nil {
+	var asset InvoiceAsset
+	if err := json.Unmarshal(data, &asset); err != nil {
 		return nil, err
 	}
-	return &token, nil
+	return &asset, nil
 }
 
 func parseECDSAPublicKey(pemStr string) (*ecdsa.PublicKey, error) {
@@ -213,7 +369,6 @@ func verifyECDSASignature(pubKey *ecdsa.PublicKey, message string, sigBase64 str
 	}
 	hash := sha256.Sum256([]byte(message))
 
-	// Support raw 64-byte (R || S) P-256 signatures
 	if len(sigBytes) == 64 {
 		r := new(big.Int).SetBytes(sigBytes[:32])
 		s := new(big.Int).SetBytes(sigBytes[32:])
@@ -222,8 +377,6 @@ func verifyECDSASignature(pubKey *ecdsa.PublicKey, message string, sigBase64 str
 		}
 		return fmt.Errorf("signature mismatch")
 	}
-
-	// Support ASN.1 DER format (default output of Python cryptography ECDSA signing)
 	if ecdsa.VerifyASN1(pubKey, hash[:], sigBytes) {
 		return nil
 	}
