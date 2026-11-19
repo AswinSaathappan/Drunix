@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiquiTrade — MSME receivables on NPCI Drunix</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#E9EEF2;--ink:#0F1B2D;--mute:#5B6878;--line:#CBD5DF;--ind:#2B3A8C;--saf:#E8A33D;--grn:#1E7A55;--red:#B3362F}
+body{background:var(--bg);color:var(--ink);font-family:'Public Sans',system-ui,sans-serif}
+h1,h2,h3,.disp{font-family:'Bricolage Grotesque',system-ui,sans-serif}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px}
+.inp{width:100%;border:1px solid var(--line);border-radius:6px;padding:.4rem .6rem;font-size:.85rem;background:#fff}
+.inp:focus,button:focus-visible{outline:2px solid var(--ind);outline-offset:1px}
+.btn{background:var(--ind);color:#fff;border-radius:6px;padding:.45rem .9rem;font-size:.85rem;font-weight:600}
+.btn:hover{background:#1f2c70}.btn.alt{background:#fff;color:var(--ink);border:1px solid var(--line)}.btn.alt:hover{background:#f3f6f9}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.tab{padding:.6rem 1rem;font-weight:600;font-size:.9rem;color:var(--mute);border-bottom:3px solid transparent}
+.tab[aria-selected=true]{color:var(--ink);border-color:var(--saf)}
+.pill{font-size:.72rem;font-weight:600;border-radius:999px;padding:.1rem .55rem;border:1px solid}
+.step{flex:1;text-align:center;font-size:.68rem;color:var(--mute);position:relative}
+.step i{display:block;margin:0 auto 3px;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid var(--line);position:relative;z-index:1}
+.step:not(:first-child)::before{content:"";position:absolute;top:6px;left:-50%;width:100%;height:2px;background:var(--line)}
+.step.done i{background:var(--grn);border-color:var(--grn)}.step.done::before{background:var(--grn)}
+.step.now i{border-color:var(--saf);background:var(--saf)}.step.now{color:var(--ink);font-weight:600}
+.step.bad i{background:var(--red);border-color:var(--red)}
+.bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:#E3E9EF}
+.mono{font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:no-preference){.toast{animation:in .2s ease-out}@keyframes in{from{opacity:0;transform:translateY(-4px)}}}
+body{background:radial-gradient(#cdd8e2 1px,transparent 1px) 0 0/22px 22px,var(--bg)}
+body>header{background:linear-gradient(135deg,#0F1B2D 0%,#1D2C66 100%)!important;position:relative}
+body>header::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,var(--saf) 0 33%,#fff 33% 66%,var(--grn) 66%)}
+#aibar{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:.6rem .75rem}
+#aibar label{color:#C9D3E6;font-weight:500}
+#gw{display:flex;align-items:center;gap:.5rem;padding-bottom:.8rem!important}
+#gw::before{content:"";width:8px;height:8px;border-radius:50%;background:#F59E0B}
+#gw.on::before{background:#34D399;box-shadow:0 0 0 3px rgba(52,211,153,.25)}#gw.off::before{background:#F87171}
+body>nav{background:transparent!important;border:0!important}
+#tabs{gap:.25rem;padding-top:.9rem}
+.tab{border:0;border-radius:9px;padding:.5rem 1rem;white-space:nowrap}
+.tab:hover{background:rgba(255,255,255,.6)}
+.tab[aria-selected=true]{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(15,27,45,.12),0 0 0 1px var(--line)}
+main h2{font-size:1.35rem;letter-spacing:-.01em}
+main label{font-size:.72rem;font-weight:600;color:var(--mute)}
+.card{border-radius:14px;box-shadow:0 1px 2px rgba(15,27,45,.05),0 8px 20px -10px rgba(15,27,45,.14)}
+.inv{position:relative;overflow:hidden;padding-left:1.4rem!important}
+.inv::before{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;background:#94A3B8}
+.inv.st-ACCEPTED::before{background:var(--ind)}.inv.st-MINTED::before{background:var(--grn)}.inv.st-QUARANTINED::before{background:var(--red)}.inv.st-SETTLED::before{background:var(--ink)}
+.amt{font-size:2rem;font-weight:700;letter-spacing:-.02em;line-height:1}
+.inv .grid{background:#F4F7FA;border-radius:10px;padding:.6rem .75rem;row-gap:.6rem}
+.step{font-size:.7rem;line-height:1.25;padding:0 2px}
+.step i{width:20px;height:20px;display:grid;place-items:center;font-size:11px;color:#fff;font-style:normal}
+.step:not(:first-child)::before{top:9px;height:3px;border-radius:2px}
+.step.done i::after{content:"✓"}.step.bad i::after{content:"✕"}
+.bar{height:12px;border-radius:6px;background:repeating-linear-gradient(45deg,#DCE3EA 0 6px,#E9EEF3 6px 12px)}
+.btn{background:linear-gradient(#34459f,#2B3A8C);box-shadow:0 1px 2px rgba(15,27,45,.25);transition:transform .1s,background .15s}
+.btn:active{transform:translateY(1px)}
+.btn.alt{background:#fff;box-shadow:none}
+.inp{border-radius:8px;padding:.5rem .7rem;transition:border-color .15s}.inp:hover{border-color:#9FB0C2}
+#drop{background:#F4F7FA;font-weight:500;padding:1.6rem}
+.pill{background:#fff}
+.empty{grid-column:1/-1;border:2px dashed var(--line);border-radius:14px;padding:2rem 1rem;text-align:center;color:var(--mute);font-size:.9rem;background:rgba(255,255,255,.5)}
+.chip{background:#E8ECFA;color:var(--ind);border-radius:6px;padding:.05rem .4rem;font-weight:600;font-size:.68rem}
+.ico{width:22px;height:22px;border-radius:50%;color:#fff;display:grid;place-items:center;font-weight:700;font-size:.8rem;flex:none}
+</style>
+</head>
+<body class="min-h-screen">
+
+<header class="bg-[#0F1B2D] text-white">
+ <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-end gap-x-6 gap-y-3">
+  <div class="mr-auto">
+   <h1 class="text-2xl font-bold leading-none flex items-center gap-2"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="13" fill="#E8A33D"/><circle cx="15" cy="15" r="9" fill="none" stroke="#0F1B2D" stroke-width="1.5" stroke-dasharray="3 2"/><text x="15" y="19.5" text-anchor="middle" font-size="12" font-weight="700" fill="#0F1B2D" font-family="Bricolage Grotesque,sans-serif">₹</text></svg>LiquiTrade</h1>
+   <p class="text-xs text-slate-300 mt-1">AI-gated fractional tokenization of MSME receivables on NPCI Drunix</p>
+  </div>
+  <div class="flex flex-wrap items-end gap-2 text-xs" id="aibar">
+   <label class="block">AI engine
+    <select id="prov" class="inp !w-44 text-slate-900 mt-0.5">
+     <option value="local">Local Ollama (qwen3:8b)</option><option value="groq">Groq</option><option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="openrouter">OpenRouter</option>
+    </select></label>
+   <label class="block">Base URL<input id="base" class="inp !w-52 text-slate-900 mt-0.5" placeholder="https://…/v1"></label>
+   <label class="block">Model<input id="model" class="inp !w-40 text-slate-900 mt-0.5"></label>
+   <label class="block">API key<input id="key" type="password" autocomplete="off" class="inp !w-40 text-slate-900 mt-0.5" placeholder="stays in this browser"></label>
+   <label class="flex items-center gap-1.5 pb-2"><input id="pc" type="checkbox"> Prefer cloud</label>
+  </div>
+ </div>
+ <div class="max-w-7xl mx-auto px-4 pb-2 text-xs text-slate-300" id="gw">Connecting to gateway…</div>
+</header>
+
+<nav class="bg-white border-b border-[var(--line)]">
+ <div class="max-w-7xl mx-auto px-4 flex overflow-x-auto" role="tablist" id="tabs">
+  <button class="tab" role="tab" data-t="msme">MSME portal</button>
+  <button class="tab" role="tab" data-t="buyer">Anchor buyer</button>
+  <button class="tab" role="tab" data-t="inv">Retail investor</button>
+  <button class="tab" role="tab" data-t="admin">Admin and UPI audit</button>
+ </div>
+</nav>
+
+<main class="max-w-7xl mx-auto px-4 py-5">
+ <div id="banners" class="space-y-2 mb-4" aria-live="polite"></div>
+ <section id="v-msme" hidden>
+  <div class="grid lg:grid-cols-5 gap-5">
+   <div class="card p-4 lg:col-span-2">
+    <h2 class="font-bold text-lg mb-2">Upload an e-invoice</h2>
+    <label id="drop" class="block border-2 border-dashed border-[var(--line)] rounded-lg p-5 text-center text-sm text-[var(--mute)] cursor-pointer hover:bg-slate-50">
+     Drop a PDF, PNG, JPG or TXT here, or click to choose
+     <input id="file" type="file" class="hidden" accept=".pdf,.png,.jpg,.jpeg,.txt"></label>
+    <p id="ocrst" class="text-xs mt-2 text-[var(--mute)]"></p>
+    <details id="rawbox" class="mt-2 text-xs" hidden><summary class="cursor-pointer font-semibold">Raw OCR text</summary><pre id="raw" class="mt-1 p-2 bg-slate-50 rounded max-h-40 overflow-auto whitespace-pre-wrap"></pre></details>
+    <div class="flex flex-wrap gap-2 mt-3">
+     <button class="btn alt" data-preset="a">₹50L Tier-A auto-clear</button>
+     <button class="btn alt" data-preset="b">Spike fraud quarantine</button>
+    </div>
+    <div class="grid grid-cols-2 gap-2 mt-3 text-xs" id="form"></div>
+    <button class="btn mt-3 w-full" id="reg">Register invoice</button>
+   </div>
+   <div class="lg:col-span-3"><h2 class="font-bold text-lg mb-2">Your invoices</h2><div id="l-msme" class="space-y-4"></div></div>
+  </div>
+ </section>
+ <section id="v-buyer" hidden>
+  <h2 class="font-bold text-lg mb-1">Invoices awaiting your acceptance</h2>
+  <label class="text-xs block mb-3 w-64">Buyer ID<input id="buyerId" class="inp mt-0.5" value="BUYER-CORP-01"></label>
+  <div id="l-buyer" class="grid lg:grid-cols-2 gap-4"></div>
+ </section>
+ <section id="v-inv" hidden>
+  <h2 class="font-bold text-lg mb-1">Marketplace</h2>
+  <div class="grid grid-cols-2 gap-2 w-full max-w-md text-xs mb-3">
+   <label>Investor ID<input id="invId" class="inp mt-0.5" value="RETAIL-001"></label>
+   <label>UPI VPA<input id="vpa" class="inp mt-0.5" value="investor@upi"></label>
+  </div>
+  <div id="l-inv" class="grid lg:grid-cols-2 gap-4"></div>
+ </section>
+ <section id="v-admin" hidden>
+  <div class="flex items-center gap-3 mb-3">
+   <h2 class="font-bold text-lg mr-auto">Ledger and settlement</h2>
+   <label class="text-xs flex items-center gap-1.5"><input id="auto" type="checkbox" checked> Auto-refresh every 3 s</label>
+   <button class="btn alt" id="refresh">Refresh now</button>
+  </div>
+  <div class="grid lg:grid-cols-2 gap-4 mb-5">
+   <div class="card p-3"><h3 class="font-bold mb-2">NPCI UPI transactions</h3><div id="upi" class="max-h-80 overflow-auto text-xs"></div></div>
+   <div class="card p-3"><h3 class="font-bold mb-2">Audit log</h3><div id="audit" class="max-h-80 overflow-auto text-xs"></div></div>
+  </div>
+  <div id="l-admin" class="grid lg:grid-cols-2 gap-4"></div>
+ </section>
+</main>
+
+<script>
+const API='http://127.0.0.1:8080';
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const inr=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
+const LP='INSTITUTION_LP_DEFAULT';
+const PROV={local:['','qwen3:8b'],groq:['https://api.groq.com/openai/v1','llama-3.3-70b-versatile'],openai:['https://api.openai.com/v1','gpt-4o-mini'],gemini:['https://generativelanguage.googleapis.com/v1beta/openai','gemini-2.5-flash'],openrouter:['https://openrouter.ai/api/v1','meta-llama/llama-3.3-70b-instruct']};
+let S={invoices:[],upiTransactions:[],auditLogs:[]}, last='', tab=localStorage.lt_tab||'msme';
+
+function loadCfg(){const c=JSON.parse(localStorage.lt_ai||'{}');$('#prov').value=c.prov||'local';$('#base').value=c.base??PROV[$('#prov').value][0];$('#model').value=c.model||PROV[$('#prov').value][1];$('#key').value=c.key||'';$('#pc').checked=!!c.pc}
+function saveCfg(){localStorage.lt_ai=JSON.stringify({prov:$('#prov').value,base:$('#base').value,model:$('#model').value,key:$('#key').value,pc:$('#pc').checked})}
+const cfg=()=>({apiKey:$('#key').value,baseUrl:$('#base').value,model:$('#model').value,preferCloud:$('#pc').checked});
+$('#prov').onchange=e=>{const p=PROV[e.target.value];$('#base').value=p[0];$('#model').value=p[1];$('#pc').checked=e.target.value!=='local';saveCfg()};
+['#base','#model','#key','#pc'].forEach(s=>$(s).addEventListener('change',saveCfg));
+
+function banner(kind,title,lines=[]){
+ const c={err:'#B3362F',warn:'#9A6A12',ok:'#1E7A55'}[kind];
+ const d=document.createElement('div');d.className='toast card p-3 text-sm flex gap-3';d.style.borderLeft='5px solid '+c;
+ d.innerHTML=`<span class="ico" style="background:${c}">${{err:"!",warn:"!",ok:"✓"}[kind]}</span><div class="flex-1"><b>${esc(title)}</b>${lines.filter(Boolean).map(l=>`<div class="text-[var(--mute)] mt-1">${esc(l)}</div>`).join('')}</div><button class="text-xs underline" aria-label="Dismiss">Dismiss</button>`;
+ d.querySelector('button').onclick=()=>d.remove();$('#banners').prepend(d);
+ if(kind==='ok')setTimeout(()=>d.remove(),6000);
+}
+async function api(path,opt={}){
+ try{
+  const r=await fetch(API+path,opt);let data=null;try{data=await r.json()}catch{}
+  return{ok:r.ok,status:r.status,data};
+ }catch(e){return{ok:false,status:0,data:{detail:'Cannot reach the gateway at '+API+'. Check that it is running.'}}}
+}
+const post=(p,b)=>api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:b===undefined?undefined:JSON.stringify(b)});
+function explain(r,ctx){
+ const d=r.data?.detail??r.data;
+ if(r.status===422&&d&&d.status==='QUARANTINED')return banner('err','Invoice quarantined by the AI risk gate',[...(d.reasons||[]),d.qwenExplanation]);
+ if(r.status===409)return banner('warn',ctx==='buy'?'Purchase rejected: the pool changed or is oversubscribed':'Conflict: duplicate or stale state',[typeof d==='string'?d:d?.message||JSON.stringify(d),'Refresh and try a smaller ticket.']);
+ if(Array.isArray(d))return banner('err',`${ctx||'Request'} failed (HTTP ${r.status})`,d.map(x=>(x.loc||[]).join('.')+': '+x.msg));
+ banner('err',`${ctx||'Request'} failed${r.status?` (HTTP ${r.status})`:''}`,[typeof d==='string'?d:JSON.stringify(d)]);
+}
+
+async function refresh(force){
+ const r=await api('/state');
+ if(!r.ok){$('#gw').textContent='Gateway unreachable at '+API;$('#gw').className='off';if(force)explain(r,'Load state');return}
+ $('#gw').className='on';$('#gw').textContent='Gateway connected · '+new Date().toLocaleTimeString();
+ const j=JSON.stringify(r.data);if(j===last&&!force)return;
+ const a=document.activeElement;if(!force&&a&&a.closest('.card')&&a.tagName==='INPUT')return;
+ last=j;S=r.data;render();
+}
+function retailSold(i){const h=i.holdings||{};return Object.entries(h).filter(([k])=>k!==LP).reduce((s,[,v])=>s+v,0)}
+function stepIdx(i){
+ if(i.status==='QUARANTINED')return{n:2,bad:true};
+ if(i.status==='SETTLED')return{n:5};
+ if(i.status==='MINTED')return{n:retailSold(i)>0?4:3};
+ return{n:i.status==='ACCEPTED'?2:1};
+}
+const badge=(txt,c)=>`<span class="pill" style="color:${c};border-color:${c}">${esc(txt)}</span>`;
+function provBadge(p){
+ if(!p)return'';
+ const c=p.startsWith('local-ollama')?'var(--grn)':p.startsWith('cloud-api')?'var(--ind)':'#9A6A12';
+ return badge(p,c);
+}
+function tierBadge(t){const m={TIER_A:'var(--grn)',TIER_B:'#9A6A12',QUARANTINED:'var(--red)'};return t?badge(t.replace('_',' '),m[t]):''}
+
+function card(i,role){
+ const st=stepIdx(i),labels=['Registered','Buyer accepted','AI screened and minted','Retail funded','Settled'];
+ const steps=labels.map((l,k)=>{const c=st.bad&&k===2?'bad':k<st.n?'done':k===st.n?'now':'';return`<div class="step ${c}"><i></i>${l}</div>`}).join('');
+ const tot=i.totalTokens||0,lp=(i.holdings||{})[LP]||0,rs=retailSold(i),av=i.availableTokens??Math.max(0,tot-lp-rs),pc=x=>tot?(x/tot*100):0;
+ const minted=['MINTED','SETTLED'].includes(i.status);
+ let h=`<article class="card inv st-${esc(i.status)} p-4" id="c-${esc(i.invoiceId)}">
+ <div class="flex flex-wrap items-start gap-2"><div class="mr-auto"><h3 class="font-bold">${esc(i.invoiceId)}</h3><div class="text-xs text-[var(--mute)]">${esc(i.sellerGstin)} → ${esc(i.buyerGstin)}</div></div>${tierBadge(i.riskTier)}${provBadge(i.llmProviderUsed)}${badge(i.status,i.status==='QUARANTINED'?'var(--red)':'var(--ind)')}</div>
+ <div class="mt-3 flex items-baseline gap-2"><span class="disp amt mono">${inr(i.amountInr)}</span><span class="text-xs text-[var(--mute)]">receivable</span></div><div class="flex mt-4 mb-3">${steps}</div>
+ <div class="grid grid-cols-3 gap-2 text-xs mono"><div><div class="text-[var(--mute)]">Tenor</div><b class="text-sm">${i.tenorDays||'-'} days</b></div><div><div class="text-[var(--mute)]">Due</div><b class="text-sm">${esc(i.dueDate||'-')}</b></div>
+ ${i.velocityDeltaPct!=null?`<div><div class="text-[var(--mute)]">Velocity delta</div><b class="text-sm">${Number(i.velocityDeltaPct).toFixed(1)}%</b></div>`:''}
+ ${i.fraudScore!=null?`<div><div class="text-[var(--mute)]">Fraud score</div><b class="text-sm">${Number(i.fraudScore).toFixed(2)}</b></div>`:''}
+ ${i.annualDiscountPct?`<div><div class="text-[var(--mute)]">Discount p.a.</div><b class="text-sm">${i.annualDiscountPct}%</b></div>`:''}</div>`;
+ if(i.lineItemDescription)h+=`<p class="text-xs text-[var(--mute)] mt-2">${esc(i.lineItemDescription)}</p>`;
+ if(i.riskTier||i.qwenExplanation){
+  h+=`<div class="mt-3 rounded-md p-2 text-xs" style="background:#F2F5F8;border:1px solid var(--line)"><div class="flex justify-between font-semibold mb-1"><span>AI audit</span><span style="color:${minted?'var(--grn)':'var(--mute)'}">${minted?'ECDSA P-256 attestation signed':i.status==='QUARANTINED'?'No attestation issued':'Attestation pending'}</span></div>
+  ${(i.reasons||[]).map(r=>`<div>• ${esc(r)}</div>`).join('')}${i.qwenExplanation?`<div class="mt-1 text-[var(--mute)]">${esc(i.qwenExplanation)}</div>`:''}</div>`;
+ }
+ if(minted){
+  h+=`<div class="mt-3"><div class="flex justify-between text-xs mb-1"><span>${tot-av} of ${tot} tokens subscribed</span><span class="mono">Face ${inr(i.tokenFaceValueInr||100)} · offer <b>${inr(i.tokenOfferPriceInr)}</b></span></div>
+  <div class="bar" role="img" aria-label="Institution ${lp}, retail ${rs}, open ${av} tokens"><div style="width:${pc(lp)}%;background:var(--ind)"></div><div style="width:${pc(rs)}%;background:var(--saf)"></div></div>
+  <div class="flex gap-3 text-[11px] mt-1 text-[var(--mute)]"><span><b style="color:var(--ind)">■</b> Institution LP ${lp}</span><span><b style="color:var(--saf)">■</b> Retail ${rs}</span><span>□ Open ${av}</span></div></div>`;
+ }
+ const p=i.payoutsInr||{};if(Object.keys(p).length)h+=`<table class="w-full text-xs mt-3 mono"><caption class="text-left font-semibold mb-1">Pro-rata payouts</caption>${Object.entries(p).map(([k,v])=>`<tr class="border-t border-[var(--line)]"><td class="py-1">${esc(k)}</td><td class="text-right">${(i.holdings||{})[k]||0} tokens</td><td class="text-right font-semibold">${inr(v)}</td></tr>`).join('')}</table>`;
+ const id=esc(i.invoiceId);
+ if(role==='msme'&&i.status==='ACCEPTED')h+=`<div class="flex gap-2 items-end mt-3"><label class="text-xs w-28">Discount % p.a.<input class="inp mt-0.5" id="d-${id}" type="number" value="12" step="0.5" min="0"></label><button class="btn" data-act="mint" data-id="${id}">Run AI screen and mint</button></div>`;
+ if(role==='msme'&&i.status==='REGISTERED')h+=`<p class="text-xs mt-3 text-[var(--mute)]">Waiting for the anchor buyer to accept.</p>`;
+ if(role==='buyer'&&i.status==='REGISTERED')h+=`<button class="btn mt-3" data-act="accept" data-id="${id}">Accept invoice</button>`;
+ if(role==='inv'&&i.status==='MINTED'&&av>0)h+=`<div class="flex gap-2 items-end mt-3"><label class="text-xs w-24">Tokens<input class="inp mt-0.5" id="n-${id}" type="number" min="1" max="${av}" value="1"></label><button class="btn" data-act="buy" data-id="${id}" data-p="${i.tokenOfferPriceInr}">Buy with UPI</button><span class="text-xs text-[var(--mute)] pb-2" id="t-${id}">${inr(i.tokenOfferPriceInr)}</span></div>`;
+ if(role==='admin'&&i.status==='MINTED')h+=`<button class="btn mt-3" data-act="settle" data-id="${id}">Settle and pay out</button>`;
+ return h+'</article>';
+}
+function render(){
+ const f=(fn,role,empty)=>{const l=S.invoices.filter(fn);return l.length?l.map(i=>card(i,role)).join(''):`<div class="empty">${empty}</div>`};
+ $('#l-msme').innerHTML=f(()=>1,'msme','No invoices yet. Upload a document or load a preset to register one.');
+ $('#l-buyer').innerHTML=f(i=>i.status==='REGISTERED','buyer','Nothing to accept right now.');
+ $('#l-inv').innerHTML=f(i=>['MINTED','SETTLED'].includes(i.status),'inv','No minted invoices are open for purchase yet.');
+ $('#l-admin').innerHTML=f(()=>1,'admin','The ledger is empty.');
+ const rows=(a,fn)=>a.length?a.slice().reverse().map(fn).join(''):'<p class="text-[var(--mute)]">Nothing recorded yet.</p>';
+ $('#upi').innerHTML=rows(S.upiTransactions||[],t=>`<div class="py-1.5 border-t border-[var(--line)] first:border-0 mono">${esc(Object.entries(t).map(([k,v])=>k+': '+(typeof v==='object'?JSON.stringify(v):v)).join(' · '))}</div>`);
+ $('#audit').innerHTML=rows(S.auditLogs||[],l=>`<div class="py-1.5 border-t border-[var(--line)] first:border-0"><span class="mono text-[var(--mute)]">${esc(l.ts)}</span> <span class="chip">${esc(l.type)}</span><div class="mt-0.5">${esc(l.detail)}</div></div>`);
+}
+
+function showTab(t){tab=t;localStorage.lt_tab=t;document.querySelectorAll('[data-t]').forEach(b=>b.setAttribute('aria-selected',b.dataset.t===t));['msme','buyer','inv','admin'].forEach(k=>$('#v-'+k).hidden=k!==t)}
+$('#tabs').onclick=e=>{const b=e.target.closest('[data-t]');if(b)showTab(b.dataset.t)};
+
+const FIELDS=[['invoiceId','Invoice ID'],['msmeId','MSME ID'],['buyerId','Buyer ID'],['sellerGstin','Seller GSTIN'],['buyerGstin','Buyer GSTIN'],['amountInr','Amount (₹)','number'],['tenorDays','Tenor (days)','number'],['dueDate','Due date','date'],['irn','IRN'],['lineItemDescription','Line item']];
+$('#form').innerHTML=FIELDS.map(([k,l,t])=>`<label class="${['irn','lineItemDescription'].includes(k)?'col-span-2':''}">${l}<input class="inp mt-0.5" id="f-${k}" type="${t||'text'}"></label>`).join('');
+const fv=k=>$('#f-'+k).value.trim();
+function fill(o){for(const[k]of FIELDS)if(o[k]!=null&&o[k]!=='')$('#f-'+k).value=o[k]}
+const hex=n=>[...crypto.getRandomValues(new Uint8Array(n))].map(b=>b.toString(16).padStart(2,'0')).join('');
+function preset(p){
+ const due=new Date(Date.now()+90*864e5).toISOString().slice(0,10),n=Math.floor(Math.random()*9000+1000);
+ fill(p==='a'?{invoiceId:'INV-A-'+n,msmeId:'MSME-001',buyerId:'BUYER-CORP-01',sellerGstin:'33AABCU9603R1ZM',buyerGstin:'29AAACB1234C1Z5',amountInr:5000000,tenorDays:90,dueDate:due,irn:hex(32),lineItemDescription:'Industrial fasteners, bulk supply order'}
+ :{invoiceId:'INV-X-'+n,msmeId:'MSME-002',buyerId:'BUYER-CORP-01',sellerGstin:'27AAACA8567B1Z2',buyerGstin:'29AAACB1234C1Z5',amountInr:950000,tenorDays:90,dueDate:due,irn:hex(32),lineItemDescription:'Consulting services, quarter-end'});
+ banner('ok','Preset loaded',['Review the form, then register the invoice.']);
+}
+const bodyInv=()=>({invoiceId:fv('invoiceId'),msmeId:fv('msmeId'),buyerId:fv('buyerId'),sellerGstin:fv('sellerGstin'),buyerGstin:fv('buyerGstin'),amountInr:+fv('amountInr'),tenorDays:+fv('tenorDays'),dueDate:fv('dueDate'),irn:fv('irn'),lineItemDescription:fv('lineItemDescription')});
+
+async function ocr(file){
+ if(!file)return;$('#ocrst').textContent='Reading '+file.name+'…';
+ const c=cfg(),fd=new FormData();fd.append('file',file);fd.append('apiKey',c.apiKey);fd.append('baseUrl',c.baseUrl);fd.append('model',c.model);fd.append('preferCloud',String(c.preferCloud));
+ const r=await api('/ocr',{method:'POST',body:fd});
+ if(!r.ok){$('#ocrst').textContent='';return explain(r,'Document read')}
+ const d=r.data;$('#raw').textContent=d.ocrRawText||'';$('#rawbox').hidden=false;
+ const s=d.structuredInvoice||{};fill(s);
+ if(!fv('msmeId'))fill({msmeId:'MSME-001'});if(!fv('buyerId'))fill({buyerId:'BUYER-CORP-01'});
+ $('#ocrst').innerHTML=`Fields filled from ${esc(d.filename)} using ${provBadge(d.llmProviderUsed)}. Check them before registering.`;
+}
+$('#file').onchange=e=>ocr(e.target.files[0]);
+const dz=$('#drop');['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.style.background='#EEF1FB'}));
+['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.style.background=''}));
+dz.addEventListener('drop',e=>ocr(e.dataTransfer.files[0]));
+
+document.addEventListener('click',async e=>{
+ const p=e.target.closest('[data-preset]');if(p)return preset(p.dataset.preset);
+ const b=e.target.closest('[data-act]');if(!b)return;
+ const id=b.dataset.id,enc=encodeURIComponent(id);b.disabled=true;
+ try{
+  if(b.dataset.act==='accept'){
+   const r=await post(`/invoices/${enc}/accept`,{buyerId:$('#buyerId').value});
+   r.ok?banner('ok','Invoice accepted',[id]):explain(r,'Accept');
+  }else if(b.dataset.act==='mint'){
+   const r=await post(`/invoices/${enc}/screen-and-mint`,{annualDiscountPct:+$('#d-'+id).value||12,llmConfig:cfg()});
+   if(r.ok)banner('ok','Screened and minted',[`${id} cleared the AI risk gate.`]);else explain(r,'Screen and mint');
+  }else if(b.dataset.act==='buy'){
+   const n=parseInt($('#n-'+id).value,10);if(!(n>0)){banner('warn','Enter a token count of 1 or more');return}
+   localStorage.lt_inv=JSON.stringify([$('#invId').value,$('#vpa').value]);
+   const r=await post(`/invoices/${enc}/purchase`,{investorId:$('#invId').value.trim(),upiVpa:$('#vpa').value.trim(),tokenCount:n});
+   if(r.ok)banner('ok','UPI payment successful',[`Bought ${r.data.tokensBought} tokens for ${inr(r.data.paidInr)}. ${r.data.remainingTokens} tokens remain.`]);else explain(r,'buy');
+  }else if(b.dataset.act==='settle'){
+   const r=await post(`/invoices/${enc}/settle`);
+   r.ok?banner('ok','Settled',[`${r.data.totalHolders} holders paid pro-rata.`]):explain(r,'Settle');
+  }
+ }finally{b.disabled=false;refresh(true)}
+});
+document.addEventListener('input',e=>{if(e.target.id?.startsWith('n-')){const id=e.target.id.slice(2),b=document.querySelector(`[data-act=buy][data-id="${CSS.escape(id)}"]`);if(b)$('#t-'+CSS.escape(id)).textContent=inr((+e.target.value||0)*b.dataset.p)}});
+$('#reg').onclick=async()=>{
+ const b=bodyInv(),miss=FIELDS.filter(([k])=>!fv(k)).map(f=>f[1]);
+ if(miss.length)return banner('warn','Complete the form first',['Missing: '+miss.join(', ')]);
+ const r=await post('/invoices/upload',b);
+ if(r.ok){banner('ok','Invoice registered',[b.invoiceId+' is now waiting for buyer acceptance.']);refresh(true)}else explain(r,'Register invoice');
+};
+$('#refresh').onclick=()=>refresh(true);
+setInterval(()=>{if($('#auto').checked)refresh()},3000);
+
+loadCfg();try{const[a,b]=JSON.parse(localStorage.lt_inv||'[]');if(a)$('#invId').value=a;if(b)$('#vpa').value=b}catch{}
+showTab(tab);refresh(true);
+</script>
+</body>
+</html>
